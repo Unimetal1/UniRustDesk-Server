@@ -113,8 +113,8 @@ fn doctor_ip(server_ip_address: std::net::IpAddr, server_address: Option<&str>) 
     doctor_tcp(server_ip_address, "21115", "hbbs extra port for nat test");
     doctor_tcp(server_ip_address, "21116", "hbbs");
     doctor_tcp(server_ip_address, "21117", "hbbr tcp");
-    doctor_tcp(server_ip_address, "21118", "hbbs websocket");
-    doctor_tcp(server_ip_address, "21119", "hbbr websocket");
+    doctor_tcp(server_ip_address, "21118", "hbbs encrypted technician tcp");
+    doctor_tcp(server_ip_address, "21119", "hbbr encrypted technician tcp");
 
     // TODO: key check
 }

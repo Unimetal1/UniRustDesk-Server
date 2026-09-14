@@ -52,6 +52,8 @@ local-ip-address = "0.5.1"
 dns-lookup = "1.0.8"
 ping = "0.4.0"
 flate2 = "1.0"
+ring = "0.17"
+x509-parser = "0.16"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # https://github.com/rustdesk/rustdesk-server-pro/issues/189, using native-tls for better tls support
@@ -59,6 +61,7 @@ reqwest = { git = "https://github.com/rustdesk-org/reqwest", features = ["blocki
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 reqwest = { git = "https://github.com/rustdesk-org/reqwest", features = ["blocking", "socks", "json", "rustls-tls", "rustls-tls-native-roots", "gzip"], default-features=false }
+openssl = { version = "0.10", features = ["vendored"] }
 
 [build-dependencies]
 hbb_common = { path = "libs/hbb_common" }
@@ -66,6 +69,12 @@ hbb_common = { path = "libs/hbb_common" }
 [workspace]
 members = ["libs/hbb_common"]
 exclude = ["ui"]
+
+[patch.crates-io]
+libsodium-sys = { path = "../.build-tools/libsodium-sys" }
+
+[patch."https://github.com/rustdesk-org/machine-uid"]
+machine-uid = { path = "../.build-tools/machine-uid" }
 
 #https://github.com/johnthagen/min-sized-rust
 #https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles

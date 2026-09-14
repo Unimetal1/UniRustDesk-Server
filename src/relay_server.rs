@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use hbb_common::{
     allow_err, bail,
     bytes::{Bytes, BytesMut},
-    futures_util::{sink::SinkExt, stream::StreamExt},
     log,
     protobuf::Message as _,
     rendezvous_proto::*,
@@ -30,8 +29,15 @@ use std::{
 
 type Usage = (usize, usize, usize, usize);
 
+// Box<dyn StreamTrait> przechowuje dowolną implementację strumienia, jak interfejs w C#.
+struct WaitingPeer {
+    stream: Box<dyn StreamTrait>,
+    is_technician: bool,
+    registered_at: std::time::Instant,
+}
+
 lazy_static::lazy_static! {
-    static ref PEERS: Mutex<HashMap<String, Box<dyn StreamTrait>>> = Default::default();
+    static ref PEERS: Mutex<HashMap<String, WaitingPeer>> = Default::default();
     static ref USAGE: RwLock<HashMap<String, Usage>> = Default::default();
     static ref BLACKLIST: RwLock<HashSet<String>> = Default::default();
     static ref BLOCKLIST: RwLock<HashSet<String>> = Default::default();
@@ -51,7 +57,7 @@ pub async fn start_with_bind(
     port: &str,
     key: &str,
 ) -> ResultType<()> {
-    let key = get_server_sk(key);
+    let (key, server_key) = get_server_sk(key);
     if let Ok(mut file) = std::fs::File::open(BLACKLIST_FILE) {
         let mut contents = String::new();
         if file.read_to_string(&mut contents).is_ok() {
@@ -85,7 +91,7 @@ pub async fn start_with_bind(
     let port: u16 = port.parse()?;
     log::info!("Listening on tcp :{}", port);
     let port2 = port + 2;
-    log::info!("Listening on websocket :{}", port2);
+    log::info!("Listening on encrypted technician tcp :{}", port2);
     let main_task = async move {
         loop {
             log::info!("Start");
@@ -94,6 +100,7 @@ pub async fn start_with_bind(
                 crate::common::listen_tcp(bind_addr, port2).await?,
                 crate::common::listen_console(bind_addr, port).await?,
                 &key,
+                &server_key,
             )
             .await;
         }
@@ -338,6 +345,7 @@ async fn io_loop(
     listener2: TcpListener,
     listener_console: Option<TcpListener>,
     key: &str,
+    server_key: &Option<sign::SecretKey>,
 ) {
     check_params();
     let limiter = <Limiter>::new(TOTAL_BANDWIDTH.load(Ordering::SeqCst) as _);
@@ -347,7 +355,7 @@ async fn io_loop(
                 match res {
                     Ok((stream, addr))  => {
                         stream.set_nodelay(true).ok();
-                        handle_connection(stream, addr, &limiter, key, false).await;
+                        handle_connection(stream, addr, &limiter, key, None).await;
                     }
                     Err(err) => {
                        log::error!("listener.accept failed: {}", err);
@@ -359,7 +367,7 @@ async fn io_loop(
                 match res {
                     Ok((stream, addr))  => {
                         stream.set_nodelay(true).ok();
-                        handle_connection(stream, addr, &limiter, key, true).await;
+                        handle_connection(stream, addr, &limiter, key, server_key.clone()).await;
                     }
                     Err(err) => {
                        log::error!("listener2.accept failed: {}", err);
@@ -371,7 +379,7 @@ async fn io_loop(
                 match res {
                     Ok((stream, addr))  => {
                         stream.set_nodelay(true).ok();
-                        handle_connection(stream, addr, &limiter, key, false).await;
+                        handle_connection(stream, addr, &limiter, key, None).await;
                     }
                     Err(err) => {
                        log::error!("console listener.accept failed: {}", err);
@@ -388,10 +396,10 @@ async fn handle_connection(
     addr: SocketAddr,
     limiter: &Limiter,
     key: &str,
-    ws: bool,
+    server_key: Option<sign::SecretKey>,
 ) {
     let ip = hbb_common::try_into_v4(addr).ip();
-    if !ws && ip.is_loopback() {
+    if server_key.is_none() && ip.is_loopback() {
         let limiter = limiter.clone();
         tokio::spawn(async move {
             let mut stream = stream;
@@ -413,84 +421,109 @@ async fn handle_connection(
     let key = key.to_owned();
     let limiter = limiter.clone();
     tokio::spawn(async move {
-        allow_err!(make_pair(stream, addr, &key, limiter, ws).await);
+        allow_err!(make_pair(stream, addr, &key, limiter, server_key).await);
     });
 }
 
 async fn make_pair(
     stream: TcpStream,
-    mut addr: SocketAddr,
+    addr: SocketAddr,
     key: &str,
     limiter: Limiter,
-    ws: bool,
+    server_key: Option<sign::SecretKey>,
 ) -> ResultType<()> {
-    if ws {
-        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-        let callback = |req: &Request, response: Response| {
-            let headers = req.headers();
-            // X-Real-IP / X-Forwarded-For are trusted as-is so that the real
-            // client IP is preserved when the WebSocket port runs behind a
-            // reverse proxy (WSS). They are NOT validated: anyone who can reach
-            // this port directly can spoof an arbitrary IP, bypassing IP-based
-            // rate limiting / blocking and corrupting logged IPs. Do not expose
-            // the WebSocket port directly to untrusted networks; only the
-            // reverse proxy, which overwrites these headers, should be able to
-            // connect to it.
-            // https://github.com/rustdesk/rustdesk-server/issues/634
-            let real_ip = headers
-                .get("X-Real-IP")
-                .or_else(|| headers.get("X-Forwarded-For"))
-                .and_then(|header_value| header_value.to_str().ok());
-            if let Some(ip) = real_ip {
-                if ip.contains('.') {
-                    addr = format!("{ip}:0").parse().unwrap_or(addr);
-                } else {
-                    addr = format!("[{ip}]:0").parse().unwrap_or(addr);
-                }
-            }
-            Ok(response)
-        };
-        let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
-        make_pair_(ws_stream, addr, key, limiter).await;
-    } else {
-        make_pair_(FramedStream::from(stream, addr), addr, key, limiter).await;
+    let is_technician = server_key.is_some();
+    let mut stream = FramedStream::from(stream, addr);
+    if let Some(server_key) = server_key.as_ref() {
+        crate::cert_auth::secure_and_authenticate(
+            &mut stream,
+            server_key,
+            crate::cert_auth::RELAY_SERVER_ROLE,
+        )
+        .await?;
     }
+    make_pair_(stream, addr, key, limiter, is_technician).await;
     Ok(())
 }
 
-async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limiter: Limiter) {
+async fn make_pair_(
+    stream: impl StreamTrait,
+    addr: SocketAddr,
+    key: &str,
+    limiter: Limiter,
+    is_technician: bool,
+) {
     let mut stream = stream;
     if let Ok(Some(Ok(bytes))) = timeout(30_000, stream.recv()).await {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
             if let Some(rendezvous_message::Union::RequestRelay(rf)) = msg_in.union {
+                log::debug!(
+                    "Relay request {} from {}, technician: {}, peer id present: {}",
+                    rf.uuid,
+                    addr,
+                    is_technician,
+                    !rf.id.is_empty()
+                );
                 if !key.is_empty() && rf.licence_key != key {
                     log::warn!("Relay authentication failed from {} - invalid key", addr);
                     return;
                 }
+                if is_technician != !rf.id.is_empty() {
+                    log::warn!("Relay role mismatch from {}", addr);
+                    return;
+                }
                 if !rf.uuid.is_empty() {
-                    let mut peer = PEERS.lock().await.remove(&rf.uuid);
-                    if let Some(peer) = peer.as_mut() {
-                        log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
-                        let id = format!("{}:{}", addr.ip(), addr.port());
-                        USAGE.write().await.insert(id.clone(), Default::default());
-                        if !stream.is_ws() && !peer.is_ws() {
-                            peer.set_raw();
-                            stream.set_raw();
-                            log::info!("Both are raw");
-                        }
-                        if let Err(err) = relay(addr, &mut stream, peer, limiter, id.clone()).await
-                        {
-                            log::info!("Relay of {} closed: {}", addr, err);
-                        } else {
-                            log::info!("Relay of {} closed", addr);
-                        }
-                        USAGE.write().await.remove(&id);
-                    } else {
-                        log::info!("New relay request {} from {}", rf.uuid, addr);
-                        PEERS.lock().await.insert(rf.uuid.clone(), Box::new(stream));
-                        sleep(30.).await;
-                        PEERS.lock().await.remove(&rf.uuid);
+                    let mut waiting = PEERS.lock().await;
+                    // Para musi zawierać uwierzytelnionego technika oraz odbiorcę.
+                    let same_role_already_waiting = match waiting.get(&rf.uuid) {
+                        Some(peer) => peer.is_technician == is_technician,
+                        None => false,
+                    };
+                    if same_role_already_waiting {
+                        return;
                     }
+                    let mut peer = match waiting.remove(&rf.uuid) {
+                        Some(waiting_peer) => waiting_peer.stream,
+                        None => {
+                            let registered_at = std::time::Instant::now();
+                            let waiting_peer = WaitingPeer {
+                                stream: Box::new(stream),
+                                is_technician,
+                                registered_at,
+                            };
+                            waiting.insert(rf.uuid.clone(), waiting_peer);
+                            // drop zwalnia blokadę słownika, jak wyjście z lock w C#.
+                            drop(waiting);
+                            sleep(30.).await;
+                            let mut waiting = PEERS.lock().await;
+                            // Stary timeout nie może usunąć nowszego wpisu z tym samym UUID.
+                            let is_original_entry = match waiting.get(&rf.uuid) {
+                                Some(peer) => peer.registered_at == registered_at,
+                                None => false,
+                            };
+                            if is_original_entry {
+                                waiting.remove(&rf.uuid);
+                            }
+                            return;
+                        }
+                    };
+                    drop(waiting);
+                    log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
+                    let id = format!("{}:{}", addr.ip(), addr.port());
+                    USAGE.write().await.insert(id.clone(), Default::default());
+                    // Keep both codecs framed. The receiver uses ordinary
+                    // RustDesk frames, while the technician stream decrypts and
+                    // re-encrypts each frame with its authenticated transport
+                    // key. Switching either side to raw would either remove
+                    // framing from the receiver or drop the technician key.
+                    log::info!("Bridging framed receiver and encrypted technician relay");
+                    if let Err(err) = relay(addr, &mut stream, &mut peer, limiter, id.clone()).await
+                    {
+                        log::info!("Relay of {} closed: {}", addr, err);
+                    } else {
+                        log::info!("Relay of {} closed", addr);
+                    }
+                    USAGE.write().await.remove(&id);
                 }
             }
         }
@@ -601,33 +634,38 @@ async fn relay(
     Ok(())
 }
 
-fn get_server_sk(key: &str) -> String {
+fn get_server_sk(key: &str) -> (String, Option<sign::SecretKey>) {
+    let mut out_sk = None;
     let mut key = key.to_owned();
     if let Ok(sk) = base64::decode(&key) {
         if sk.len() == sign::SECRETKEYBYTES {
             log::info!("The key is a crypto private key");
             key = base64::encode(&sk[(sign::SECRETKEYBYTES / 2)..]);
+            let mut tmp = [0u8; sign::SECRETKEYBYTES];
+            tmp.copy_from_slice(&sk);
+            out_sk = Some(sign::SecretKey(tmp));
         }
     }
 
-    if key == "-" || key == "_" {
-        let (pk, _) = crate::common::gen_sk(300);
-        key = pk;
+    if key.is_empty() || key == "-" || key == "_" {
+        let (pk, sk) = crate::common::gen_sk(0);
+        out_sk = sk;
+        if !key.is_empty() {
+            key = pk;
+        }
     }
 
     if !key.is_empty() {
         log::info!("Key: {}", key);
     }
 
-    key
+    (key, out_sk)
 }
 
 #[async_trait]
 trait StreamTrait: Send + Sync + 'static {
     async fn recv(&mut self) -> Option<Result<BytesMut, Error>>;
     async fn send_raw(&mut self, bytes: Bytes) -> ResultType<()>;
-    fn is_ws(&self) -> bool;
-    fn set_raw(&mut self);
 }
 
 #[async_trait]
@@ -637,47 +675,10 @@ impl StreamTrait for FramedStream {
     }
 
     async fn send_raw(&mut self, bytes: Bytes) -> ResultType<()> {
-        self.send_bytes(bytes).await
-    }
-
-    fn is_ws(&self) -> bool {
-        false
-    }
-
-    fn set_raw(&mut self) {
-        self.set_raw();
-    }
-}
-
-#[async_trait]
-impl StreamTrait for tokio_tungstenite::WebSocketStream<TcpStream> {
-    async fn recv(&mut self) -> Option<Result<BytesMut, Error>> {
-        if let Some(msg) = self.next().await {
-            match msg {
-                Ok(msg) => {
-                    match msg {
-                        tungstenite::Message::Binary(bytes) => {
-                            Some(Ok(bytes[..].into())) // to-do: poor performance
-                        }
-                        _ => Some(Ok(BytesMut::new())),
-                    }
-                }
-                Err(err) => Some(Err(Error::new(std::io::ErrorKind::Other, err.to_string()))),
-            }
+        if self.is_secured() {
+            FramedStream::send_raw(self, bytes.to_vec()).await
         } else {
-            None
+            self.send_bytes(bytes).await
         }
     }
-
-    async fn send_raw(&mut self, bytes: Bytes) -> ResultType<()> {
-        Ok(self
-            .send(tungstenite::Message::Binary(bytes.to_vec()))
-            .await?) // to-do: poor performance
-    }
-
-    fn is_ws(&self) -> bool {
-        true
-    }
-
-    fn set_raw(&mut self) {}
 }
