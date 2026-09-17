@@ -71,10 +71,7 @@ members = ["libs/hbb_common"]
 exclude = ["ui"]
 
 [patch.crates-io]
-libsodium-sys = { path = "../.build-tools/libsodium-sys" }
-
-[patch."https://github.com/rustdesk-org/machine-uid"]
-machine-uid = { path = "../.build-tools/machine-uid" }
+libsodium-sys = { path = "third_party/libsodium-sys" }
 
 #https://github.com/johnthagen/min-sized-rust
 #https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles

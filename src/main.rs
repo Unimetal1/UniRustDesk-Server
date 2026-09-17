@@ -33,7 +33,6 @@ fn main() -> ResultType<()> {
     let bind_addr = parse_bind_address(&get_arg("bind"))?;
     let rmem = get_arg("rmem").parse::<usize>().unwrap_or(RMEM);
     let serial: i32 = get_arg("serial").parse().unwrap_or(0);
-    crate::common::check_software_update();
     RendezvousServer::start_with_bind(
         bind_addr,
         port,

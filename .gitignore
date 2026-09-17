@@ -10,3 +10,13 @@ src/version.rs
 db_v2.sqlite3
 test.*
 .idea
+/libs/hbb_common - kopia/
+.env
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.pfx
+*.p12
+*.key
+/technicians/
+/.vs/
