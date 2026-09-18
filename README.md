@@ -1,3 +1,39 @@
+# Pomoc Zdalna — serwer
+
+**Serwer Pomocy Zdalnej to zmodyfikowana wersja RustDesk Server (AGPL-3.0). Nie jest oficjalnym produktem RustDesk.**
+
+Zmiany: uwierzytelnianie techników certyfikatami, szyfrowane i uwierzytelniane porty
+techników, autoryzacja relay, lokalna historyczna biblioteka `hbb_common` zgodna
+z klientem 1.3.6 oraz usunięte automatyczne sprawdzanie aktualizacji.
+
+- Opis zmian i licencji: [NOTICE-CNG.md](NOTICE-CNG.md)
+- Budowanie i uruchomienie (Ubuntu x86_64): [BUILDING-CNG.md](BUILDING-CNG.md)
+- Licencja: GNU AGPL-3.0 — [LICENSE](LICENSE); program udostępniany bez gwarancji
+- Źródła wydania: tag [`cng-1.3.6-2026-09-16`](https://github.com/Unimetal1/UniRustDesk-Server/tree/cng-1.3.6-2026-09-16)
+- Klient: [UniRustDesk-Client](https://github.com/Unimetal1/UniRustDesk-Client)
+
+Najważniejsze różnice w uruchomieniu:
+
+- Porty: TCP 21115–21119 i UDP 21116. **Porty 21118 i 21119 są wymagane** —
+  łączą się przez nie technicy z certyfikatem (w oryginalnym RustDesk służą
+  klientowi webowemu i są opcjonalne).
+- Certyfikaty publiczne (`.cer`) techników: katalog `technicians` lub wskazany
+  zmienną `TECHNICIAN_WHITELIST_DIR`.
+- Klucz serwera `id_ed25519` jest tworzony przy pierwszym starcie, jeśli go brak.
+  Zachowaj go — klienci mają wbudowany odpowiadający mu klucz publiczny.
+  Nie umieszczaj go w repozytorium.
+
+Prawa autorskie Purslane Ltd. i pozostałych autorów RustDesk zostały zachowane.
+Nazwa i logo RustDesk należą do ich właścicieli.
+
+*This is a modified RustDesk Server (AGPL-3.0) used by Pomoc Zdalna.
+It is not an official RustDesk product.*
+
+---
+
+> Poniżej oryginalny opis projektu RustDesk Server. Linki do pobierania, dokumentacji
+> i RustDesk Server Pro prowadzą do oryginalnego projektu.
+
 # RustDesk Server Program
 
 [![build](https://github.com/rustdesk/rustdesk-server/actions/workflows/build.yaml/badge.svg)](https://github.com/rustdesk/rustdesk-server/actions/workflows/build.yaml)
