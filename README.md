@@ -1,6 +1,6 @@
-# Pomoc Zdalna — serwer
+# SerwisOnline (ServisOnline) — serwer
 
-**Serwer Pomocy Zdalnej to zmodyfikowana wersja RustDesk Server (AGPL-3.0). Nie jest oficjalnym produktem RustDesk.**
+**Serwer SerwisOnline to zmodyfikowana wersja RustDesk Server (AGPL-3.0). Nie jest oficjalnym produktem RustDesk.**
 
 Zmiany: uwierzytelnianie techników certyfikatami, szyfrowane i uwierzytelniane porty
 techników, autoryzacja relay, lokalna historyczna biblioteka `hbb_common` zgodna
@@ -26,7 +26,7 @@ Najważniejsze różnice w uruchomieniu:
 Prawa autorskie Purslane Ltd. i pozostałych autorów RustDesk zostały zachowane.
 Nazwa i logo RustDesk należą do ich właścicieli.
 
-*This is a modified RustDesk Server (AGPL-3.0) used by Pomoc Zdalna.
+*This is a modified RustDesk Server (AGPL-3.0) used by ServisOnline.
 It is not an official RustDesk product.*
 
 ---
